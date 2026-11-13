@@ -1,13 +1,15 @@
 // 画面。ビルド不要の素の JavaScript。
 // 文字列は必ず textContent 経由で入れる（h() が面倒を見る）。
 
+import { requirements, requirement, tableEditor, sweep } from './req.js';
+
 const $app = document.getElementById('app');
-let META = null;
-let STATE = null;
+export let META = null;
+export let STATE = null;
 
 // ---- 小道具 ----
 
-function h(tag, attrs = {}, ...children) {
+export function h(tag, attrs = {}, ...children) {
   const el = document.createElement(tag);
   for (const [k, v] of Object.entries(attrs ?? {})) {
     if (v == null || v === false) continue;
@@ -20,7 +22,7 @@ function h(tag, attrs = {}, ...children) {
   return el;
 }
 
-async function api(method, path, body) {
+export async function api(method, path, body) {
   const res = await fetch(path, {
     method,
     headers: body ? { 'content-type': 'application/json' } : {},
@@ -32,7 +34,7 @@ async function api(method, path, body) {
 }
 
 let toastTimer;
-function toast(msg, isError = false) {
+export function toast(msg, isError = false) {
   const t = document.getElementById('toast');
   t.textContent = msg;
   t.className = `show${isError ? ' error' : ''}`;
@@ -41,17 +43,17 @@ function toast(msg, isError = false) {
 }
 
 // 失敗を握りつぶさず、画面に出す
-const guard = (fn) => async (...a) => {
+export const guard = (fn) => async (...a) => {
   try { await fn(...a); } catch (e) { toast(e.message, true); }
 };
 
-const T = (type) => META.types[type];
-const short = (type) => T(type).short ?? T(type).label;
+export const T = (type) => META.types[type];
+export const short = (type) => T(type).short ?? T(type).label;
 const fmtDate = (iso) => iso.slice(0, 16).replace('T', ' ');
 
 // ---- 起動と画面の切り替え ----
 
-async function refresh() {
+export async function refresh() {
   STATE = await api('GET', '/api/state');
   await render();
 }
@@ -60,7 +62,11 @@ async function render() {
   if (!STATE.project) return $app.replaceChildren(welcome());
   const [route = 'home', arg] = location.hash.replace(/^#\/?/, '').split('/');
   const pages = { home, inbox, requirements, ledger, charter };
-  const page = pages[route] ?? home;
+  const sub = location.hash.replace(/^#\/?/, '').split('/')[2];
+  const page = route === 'requirements' && arg === 'sweep' ? sweep
+    : route === 'requirements' && arg === 'table' ? () => tableEditor(sub)
+    : route === 'requirements' && arg ? () => requirement(arg)
+    : pages[route] ?? home;
   const body = await page(arg);
   // 描き直しても、受付欄に書きかけの文字とカーソルは失わない
   const old = document.getElementById('capture');
@@ -99,12 +105,27 @@ function header(route) {
   }));
   const c = STATE.counts;
   return h('header', { class: 'top' }, h('div', { class: 'wrap' },
-    h('div', { class: 'brand' }, h('b', {}, '段取り'), h('span', { class: 'muted small' }, STATE.project.name)),
+    h('div', { class: 'brand' }, h('b', {}, '段取り'), projectSwitcher()),
     h('form', { class: 'capture', onsubmit: submit }, input, h('button', { class: 'primary' }, '受付箱へ')),
     h('nav', { class: 'tabs', 'aria-label': 'メニュー' },
-      tab('home', 'ホーム'), tab('inbox', '受付箱', c.inbox), tab('requirements', '要件', c.requirement),
+      tab('home', 'ホーム'), tab('inbox', '受付箱', c.inbox), tab('requirements', '要件'),
       tab('ledger', '台帳', (c.open ?? 0) || null), tab('charter', '憲章', STATE.gaps.length || null)),
   ));
+}
+
+function projectSwitcher() {
+  const sel = h('select', { class: 'switcher', 'aria-label': 'プロジェクトを切り替える' },
+    STATE.projects.map((p) => h('option', { value: p.id, selected: p.id === STATE.project.id }, p.name)),
+    h('option', { value: 'new' }, '＋ 新しいプロジェクトを始める'),
+    h('option', { value: 'sample' }, '＋ 練習用のプロジェクトを作る（まるみ屋）'));
+  sel.addEventListener('change', guard(async () => {
+    if (sel.value === 'new') { STATE = { project: null, projects: STATE.projects }; return $app.replaceChildren(welcome()); }
+    if (sel.value === 'sample') await api('POST', '/api/sample', {});
+    else await api('POST', '/api/projects/select', { id: Number(sel.value) });
+    location.hash = '#/home';
+    await refresh();
+  }));
+  return sel;
 }
 
 // ---- はじめての画面 ----
@@ -127,7 +148,10 @@ function welcome() {
       h('label', { for: 'p-name' }, 'プロジェクトの名前'), name,
       h('label', { for: 'p-purpose' }, '何のためのプロジェクト？', h('span', { class: 'hint' }, 'まだ書けなければ空でかまいません')), purpose,
       h('div', { class: 'row', style: 'margin-top:18px' }, h('button', { class: 'primary' }, '始める')),
-    ));
+    ),
+    h('p', { class: 'small muted' }, 'まず触ってみたいだけなら：',
+      h('button', { type: 'button', onclick: guard(async () => { await api('POST', '/api/sample', {}); location.hash = '#/home'; await refresh(); }) }, '練習用のプロジェクトで試す'),
+      STATE.projects?.length ? h('button', { type: 'button', class: 'quiet', onclick: guard(refresh) }, 'やめて戻る') : null));
 }
 
 // ---- ホーム：今日やること ----
@@ -182,7 +206,7 @@ async function inbox() {
 
 // ---- 一覧（台帳と要件で共用）----
 
-function itemRow(i) {
+export function itemRow(i) {
   const late = i.status === 'open' && i.due && i.due < STATE.today;
   return h('li', { class: `click ${i.status === 'done' ? 'done' : ''}`, tabindex: 0, role: 'button',
     onclick: () => openItem(i.id), onkeydown: (e) => e.key === 'Enter' && openItem(i.id) },
@@ -225,14 +249,6 @@ async function ledger(arg) {
   ];
 }
 
-async function requirements() {
-  return [
-    h('h1', {}, '要件'),
-    h('p', { class: 'muted' }, 'いまは一覧だけです。層ごとの整理、曖昧な言葉の点検、受け入れ条件、例外さがしは次の版で入ります。'),
-    await itemList('requirement'),
-  ];
-}
-
 // ---- 項目の入力・編集 ----
 
 async function openItem(id) {
@@ -244,17 +260,17 @@ async function openItem(id) {
 
 function fieldInput(f, value, id) {
   if (f.type === 'textarea') return h('textarea', { id, value: value ?? '' });
-  if (f.type === 'select') return h('select', { id }, h('option', { value: '' }, '（選ぶ）'), f.options.map((o) => h('option', { value: o, selected: o === value }, o)));
+  if (f.type === 'select') return h('select', { id }, h('option', { value: '' }, '（選ぶ）'), f.options.map((o) => (Array.isArray(o) ? o : [o, o])).map(([v, l]) => h('option', { value: v, selected: v === value }, l)));
   return h('input', { id, type: f.type === 'date' ? 'date' : 'text', value: value ?? '', placeholder: f.hint && f.type !== 'date' ? '' : null });
 }
 
-function showDialog(dlg) {
+export function showDialog(dlg) {
   document.body.append(dlg);
   dlg.addEventListener('close', () => dlg.remove());
   dlg.showModal();
 }
 
-function editDialog(item, events = [], links = []) {
+export function editDialog(item, events = [], links = []) {
   const def = T(item.type);
   const isNew = !item.id;
   const title = h('input', { id: 'f-title', value: item.title ?? '', required: true, placeholder: isNew ? `例：${def.example}` : null });
@@ -267,7 +283,7 @@ function editDialog(item, events = [], links = []) {
   };
   const save = guard(async (e) => {
     e.preventDefault();
-    if (isNew) await api('POST', '/api/items', { type: item.type, ...collect() });
+    if (isNew) await api('POST', '/api/items', { type: item.type, link: item.link, parent_id: item.parent_id, ...collect(), fields: { ...item.fields, ...collect().fields } });
     else await api('PATCH', `/api/items/${item.id}`, collect());
     dlg.close();
     toast('保存しました');
@@ -295,7 +311,7 @@ function editDialog(item, events = [], links = []) {
       }) }, '保存して、確認済みにする') : null,
       !isNew && item.type === 'open' && item.status === 'open'
         ? h('button', { type: 'button', onclick: () => { dlg.close(); resolveDialog(item); } }, '決まった') : null,
-      !isNew && item.status === 'open' && ['risk', 'request', 'requirement', 'exit'].includes(item.type)
+      !isNew && item.status === 'open' && ['risk', 'request', 'exit'].includes(item.type)
         ? h('button', { type: 'button', onclick: setStatus('done', '済みにしました') }, '済みにする') : null,
       !isNew && item.status === 'done' ? h('button', { type: 'button', onclick: setStatus('open', '戻しました') }, '未了に戻す') : null,
       h('button', { type: 'button', class: 'push', onclick: () => dlg.close() }, '閉じる'),
@@ -308,7 +324,7 @@ function editDialog(item, events = [], links = []) {
 }
 
 const ACTOR = { human: '自分', ai: 'AI' };
-const ACTION = { create: '作成', update: '変更', convert: '種類を変更', confirm: '確認', resolve: '決定' };
+const ACTION = { create: '作成', update: '変更', convert: '種類を変更', confirm: '確認', resolve: '決定', link: '関連づけ', unlink: '関連を解除' };
 const fieldName = (def) => (k) => {
   const key = k.replace(/^fields\./, '');
   return { title: '内容', status: '状態', type: '種類' }[key] ?? def.fields.find((f) => f.key === key)?.label ?? key;
@@ -398,6 +414,14 @@ async function charter() {
     h('div', { class: 'card row spread', style: 'margin-top:32px' },
       h('span', { class: 'small muted' }, c.reviewed_at ? `最後に見直した日：${c.reviewed_at}` : 'まだ一度も見直していません'),
       h('button', { onclick: () => saveProject({ charter: { reviewed_at: STATE.today } }, '見直した日を記録しました') }, '読み直した。今も有効')),
+    h('p', { class: 'small', style: 'margin-top:20px' },
+      h('button', { onclick: guard(async () => {
+        const { name, markdown } = await api('GET', '/api/export');
+        const a = h('a', { href: URL.createObjectURL(new Blob([markdown], { type: 'text/markdown' })), download: `${name}.md` });
+        a.click(); URL.revokeObjectURL(a.href);
+        toast('Markdown を書き出しました');
+      }) }, 'プロジェクト全体を Markdown に書き出す'),
+      h('span', { class: 'muted' }, '　共有するときや、git で差分を見たいときに。')),
   ];
 }
 

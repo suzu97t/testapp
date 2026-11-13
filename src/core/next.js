@@ -2,10 +2,12 @@
 // 画面に出すのは先頭3件だけ（同時に多くを始めない）。
 
 import { displayId } from './types.js';
+import { analyze } from './analyze.js';
+import { summarize } from './tables.js';
 
 const daysBetween = (a, b) => Math.floor((Date.parse(b) - Date.parse(a)) / 86400000);
 
-export function nextActions({ project, items, today }) {
+export function nextActions({ project, items, links = [], today }) {
   const out = [];
   const add = (priority, key, title, why, href, action) => out.push({ priority, key, title, why, href, action });
   const c = project.charter ?? {};
@@ -28,9 +30,13 @@ export function nextActions({ project, items, today }) {
     add(88, 'open-overdue', `期限を過ぎた未決が ${overdue.length} 件（${displayId(overdue[0])} ほか）`,
       '決める人に聞くか、期限を引き直します。放置された未決は、現場が勝手に埋めます。', '#/ledger/open', '見る');
 
-  const drafts = live.filter((i) => i.source === 'ai' && !i.confirmed_at && i.type !== 'inbox');
-  if (drafts.length)
-    add(85, 'drafts', `AIの案が ${drafts.length} 件、確認待ち`, '確認するまで「決まったこと」には数えません。採用するか、直すか、捨てます。', `#/ledger/${drafts[0].type}`, '確認する');
+  // 表は枠だけで、何も決めていないので確認の対象にしない
+  const drafts = live.filter((i) => i.source === 'ai' && !i.confirmed_at && !['inbox', 'table'].includes(i.type));
+  if (drafts.length) {
+    const t = drafts[0].type;
+    const href = t === 'exception' ? '#/requirements/sweep' : ['requirement', 'criterion'].includes(t) ? '#/requirements' : ['notdo', 'exit', 'authority'].includes(t) ? '#/charter' : `#/ledger/${t}`;
+    add(85, 'drafts', `AIの案が ${drafts.length} 件、確認待ち（${displayId(drafts[0])} ほか）`, '確認するまで「決まったこと」には数えません。開いて、採用するか、直すか、捨てます。', href, '確認する');
+  }
 
   const judge = active('exit').filter((i) => i.due && i.due <= today);
   if (judge.length)
@@ -49,6 +55,28 @@ export function nextActions({ project, items, today }) {
     if (!of('exit').length)
       add(50, 'exit', '立ち止まる条件を1つ書く', '苦しくなってからでは書けません。余裕のある今しか置けない条件です。', '#/charter', '書く');
   }
+
+  // ---- 要件 ----
+  const a = analyze({ items, links });
+  const count = (pred) => a.reqs.filter((r) => a.openFindings(r.id).some(pred)).length;
+  const unlayered = count((f) => f.key === 'no-layer');
+  if (unlayered)
+    add(65, 'req-layer', `どの層の話か決まっていない要件が ${unlayered} 件`, '目的の話と画面の話が同じ列に並んでいると、比べることも確かめることもできません。', '#/requirements', '整理する');
+  const noCriteria = count((f) => f.key === 'no-criteria');
+  if (noCriteria)
+    add(62, 'req-criteria', `受け入れ条件のない機能が ${noCriteria} 件`, '確かめられない要件は、完了を判定できません。実装を始める前に書くと、仕様の穴が先に見つかります。', '#/requirements', '書く');
+  const blankCells = live.filter((i) => i.type === 'table').reduce((n, t) => n + summarize(t).blank, 0);
+  if (blankCells)
+    add(58, 'table-blank', `表の空白が ${blankCells} つ残っています`, '空白のセルが、まだ決まっていない例外です。「起きない」と決めるのも1つの答えです。', '#/requirements', '埋める');
+  const undecided = active('exception').filter((i) => !i.fields?.handling || i.fields.handling === 'まだ決まっていない');
+  if (undecided.length)
+    add(46, 'exception-undecided', `扱いの決まっていない例外が ${undecided.length} 件`, '決めないまま進むと、現場が回避策を作り、それが新しい暗黙のルールになります。', '#/requirements/sweep', '決める');
+  const broken = count((f) => f.key === 'no-parent' || f.key === 'no-child');
+  if (broken)
+    add(44, 'req-trace', `上下のつながりが切れている要件が ${broken} 件`, '上に辿れない機能は根拠がなく、下のない業務は抜けです。機能の一覧を眺めても見つからない穴です。', '#/requirements', '見る');
+  const wordy = count((f) => f.kind === 'word' || f.kind === 'mixed' || f.key === 'only-happy' || f.key.startsWith('then-'));
+  if (wordy)
+    add(38, 'req-lint', `書き方に気になる点のある要件が ${wordy} 件`, '曖昧な言葉のある場所は、たいてい誰も決めていない場所です。', '#/requirements', '見る');
 
   const thin = active('decision').filter((i) => !i.fields?.alternatives?.trim());
   if (thin.length)

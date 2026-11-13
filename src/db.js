@@ -44,6 +44,7 @@ CREATE TABLE IF NOT EXISTS links (
   UNIQUE(from_id, to_id, kind)
 );
 -- 追記のみ。誰が・いつ・何を・どう変えたか。記録は後から足せない。
+CREATE TABLE IF NOT EXISTS settings (key TEXT PRIMARY KEY, value TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS events (
   id INTEGER PRIMARY KEY,
   project_id INTEGER NOT NULL,
@@ -84,7 +85,18 @@ export class Store {
   #project(row) { return row && { ...row, charter: JSON.parse(row.charter) }; }
 
   currentProject() {
-    return this.#project(this.db.prepare('SELECT * FROM projects ORDER BY id DESC LIMIT 1').get());
+    const id = this.db.prepare("SELECT value FROM settings WHERE key='current_project'").get()?.value;
+    const row = (id && this.db.prepare('SELECT * FROM projects WHERE id=?').get(Number(id)))
+      || this.db.prepare('SELECT * FROM projects ORDER BY id DESC LIMIT 1').get();
+    return this.#project(row);
+  }
+
+  listProjects() { return this.db.prepare('SELECT id, name FROM projects ORDER BY id').all(); }
+
+  selectProject(id) {
+    if (!this.db.prepare('SELECT 1 FROM projects WHERE id=?').get(id)) throw new UserError('プロジェクトが見つかりません');
+    this.db.prepare("INSERT INTO settings (key, value) VALUES ('current_project', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value").run(String(id));
+    return this.currentProject();
   }
 
   createProject({ name, purpose = '' }, actor = 'human') {
@@ -93,7 +105,7 @@ export class Store {
       const { lastInsertRowid: id } = this.db.prepare('INSERT INTO projects (name, purpose, created_at) VALUES (?,?,?)')
         .run(name.trim(), purpose.trim(), now());
       this.#log(Number(id), null, actor, 'project.create', { name, purpose });
-      return this.currentProject();
+      return this.selectProject(Number(id));
     });
   }
 
@@ -212,6 +224,35 @@ export class Store {
       this.#log(cur.project_id, id, actor, 'resolve', { decision_id: d.id });
     });
     return d;
+  }
+
+  // ---- 項目どうしの関係 ----
+
+  link(fromId, toId, kind, actor = 'human') {
+    const from = this.getItem(fromId);
+    const to = this.getItem(toId);
+    if (!from || !to || from.project_id !== to.project_id) throw new UserError('つなぐ相手が見つかりません');
+    if (fromId === toId) throw new UserError('自分自身にはつなげません');
+    const r = this.db.prepare('INSERT OR IGNORE INTO links (from_id, to_id, kind) VALUES (?,?,?)').run(fromId, toId, kind);
+    if (r.changes) this.#log(from.project_id, fromId, actor, 'link', { kind, to: toId });
+  }
+
+  // 要件の「上」を付け替える（上は1つだけ）。parentId が null なら外す。
+  setParent(childId, parentId, actor = 'human') {
+    const child = this.getItem(childId);
+    if (!child) throw new UserError('項目が見つかりません');
+    this.#tx(() => {
+      for (let p = parentId; p; p = this.db.prepare("SELECT to_id FROM links WHERE from_id=? AND kind='parent'").get(p)?.to_id) {
+        if (p === childId) throw new UserError('上下が輪になってしまいます');
+      }
+      const r = this.db.prepare("DELETE FROM links WHERE from_id=? AND kind='parent'").run(childId);
+      if (r.changes && !parentId) this.#log(child.project_id, childId, actor, 'unlink', { kind: 'parent' });
+    });
+    if (parentId) this.link(childId, parentId, 'parent', actor);
+  }
+
+  listLinks(projectId) {
+    return this.db.prepare('SELECT l.from_id, l.to_id, l.kind FROM links l JOIN items i ON i.id=l.from_id WHERE i.project_id=?').all(projectId);
   }
 
   linksOf(id) {

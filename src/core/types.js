@@ -48,7 +48,32 @@ export const TYPES = {
     label: '要件', short: '要件', prefix: 'R',
     titleLabel: '何ができるようにする？',
     example: '店員が、取り置き対象の商品を一覧で見られる',
-    fields: [{ key: 'body', label: '補足', col: true, type: 'textarea' }],
+    fields: [
+      { key: 'layer', label: 'どの層の話？', type: 'select', hint: '迷ったら空のままで',
+        options: [['purpose', '目的：なぜやるのか'], ['business', '業務：誰が何をするのか'], ['system', 'システム：システムが何を担うのか'], ['function', '機能：具体的に何ができるのか']] },
+      { key: 'body', label: '補足', col: true, type: 'textarea' },
+    ],
+  },
+  criterion: {
+    label: '受け入れ条件', short: '受け入れ条件', prefix: 'AC',
+    titleLabel: 'どんな場合？（ひとことで）',
+    example: '在庫が残り1個で、2人が同時に注文した',
+    fields: [
+      { key: 'given', label: 'どういう状態のとき（前提）', type: 'textarea' },
+      { key: 'when', label: '何をしたら（操作）', type: 'textarea' },
+      { key: 'then', label: 'どうなる（結果）', type: 'textarea', hint: '「正しく処理される」ではなく、見えるもの・変わる数を' },
+    ],
+  },
+  table: { label: '表', short: '表', prefix: 'TB', titleLabel: '表の名前', example: '来店して引き渡すとき', fields: [] },
+  exception: {
+    label: '例外', short: '例外', prefix: 'EX',
+    titleLabel: 'どんな例外？',
+    example: '期限が切れた後に、お客様が来店した',
+    fields: [
+      { key: 'handling', label: 'どう扱う？', type: 'select', options: ['システムで扱う', '人が扱う（手順を用意する）', '業務を変えて、例外をなくす', 'まだ決まっていない'] },
+      { key: 'owner', label: '決めた人', col: true },
+      { key: 'body', label: '補足', col: true, type: 'textarea' },
+    ],
   },
   request: {
     label: '依頼', short: '依頼', prefix: 'RQ',
